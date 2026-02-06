@@ -17,4 +17,10 @@ class ShelfLayout(Base):
     isbn = Column(String, unique=True, index=True)  # Google Books API の ID
     x = Column(Integer)
     y = Column(Integer)
-    
+    books_per_shelf = Column(Integer)
+
+class ShelfDesign(Base):
+    __tablename__ = "shelfdesign"
+    id = Column(Integer, primary_key=True, index=True)
+    books_per_shelf = Column(Integer)
+    total_shelves = Column(Integer)

@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from schemas import AddFromHandRequest
 from sqlalchemy.orm import Session
 from database import get_db
-from models import MyHand, ShelfLayout
-from neo4j_crud import add_book_with_meaning, groups_from_neo4j
+from models import MyHand
+from neo4j_crud import add_book_with_meaning
 from routers.book_data import fetch_book_metadata
-from routers.bookshelf import calc_shelf_position
+from utils.layout_engine import rebuild_shelf_layout
+
 # from routers.knowledge_graph import rebuild_knowledge_graph
 
 router = APIRouter(prefix="/books", tags=["books"])
@@ -77,90 +78,38 @@ def add_to_hand(
     }
 
 @router.post("/add_from_hand")
-def add_from_hand(req: AddFromHandRequest, db: Session = Depends(get_db)):
-    if not req.book_ids:
+async def add_from_hand(req: AddFromHandRequest, db: Session = Depends(get_db)):
+    if not req.isbns:
         raise HTTPException(status_code=400, detail="No books selected")
 
-    for isbn in req.book_ids:
+    for isbn in req.isbns:
         # ① メタデータ取得
-        book = fetch_book_metadata(isbn)
-        # ② Neo4j に保存（意味・概念）
-        add_book_with_meaning(book)
-
-        hand_item = (
-            db.query(MyHand)
-            .filter(MyHand.isbn == isbn)
-            .first()
-        )
-        if hand_item:
-            db.delete(hand_item)
-
-    rebuild_shelf_layout(db)
-
-    db.commit()
-
-    return {"message": "Success"}
-
-@router.post("/add_from_hand")
-def add_from_hand(req: AddFromHandRequest, db: Session = Depends(get_db)):
-    if not req.book_ids:
-        raise HTTPException(status_code=400, detail="No books selected")
-
-    # 1. Neo4j にすべての本を保存（意味を解析）
-    for isbn in req.book_ids:
-        book = fetch_book_metadata(isbn)
-        add_book_with_meaning(book)
+        book = await fetch_book_metadata(isbn)
         
-        # 手元（MyHand）から削除
-        hand_item = db.query(MyHand).filter(MyHand.isbn == isbn).first()
-        if hand_item:
-            db.delete(hand_item)
+        if book:
+            # ② Neo4j に保存（意味・概念）
+            add_book_with_meaning(book)
 
-    # 2. 本棚全体のレイアウトを再計算して SQLite を更新
+            # SQLite (MyHand) から削除
+            db.query(MyHand).filter(MyHand.isbn == isbn).delete()
+
+    # レイアウト再構築
     rebuild_shelf_layout(db)
-    return {"message": "Success"}
-
-
-# 棚の制限変更用のAPI
-@router.post("/rebuild")
-def rebuild_shelf(books_per_shelf: int, db: Session = Depends(get_db)):
-    rebuild_shelf_layout(db, books_per_shelf=books_per_shelf)
-    return {"message": f"Rebuilt with {books_per_shelf} books per shelf"}
-
-def rebuild_shelf_layout(db: Session, books_per_shelf: int=5):
-    groups = groups_from_neo4j()
-
-    # ② 先ほど作成した Python 関数で全書籍の座標を計算
-    new_positions = calc_shelf_position(groups, books_per_shelf=books_per_shelf)
-
-    unique_map = {pos["book_id"]: pos for pos in new_positions}
-    final_positions = unique_map.values()
-
-    # ③ SQLite の既存レイアウトを一度クリア（または全更新）
-    db.query(ShelfLayout).delete()
-
-    # ④ 新しい座標を保存
-    for b in final_positions:
-        layout = ShelfLayout(
-            book_id=b['book_id'],
-            x=b['row'], # row
-            y=b['col']  # col
-        )
-        db.add(layout)
-
     db.commit()
+
+    return {"message": "Success"}
 
 # 本を手元から削除
-@router.delete("/remove_from_hand/{book_id}")
-def remove_from_hand(book_id: str, db: Session = Depends(get_db)):
+@router.delete("/remove_from_hand/{isbn}")
+def remove_from_hand(isbn: str, db: Session = Depends(get_db)):
     # DBから該当本を検索
-    book = db.query(MyHand).filter(MyHand.book_id == book_id).first()
+    book = db.query(MyHand).filter(MyHand.isbn == isbn).first()
     if not book:
         raise HTTPException(status_code=404, detail="本が見つかりません")
 
     db.delete(book)
     db.commit()
-    return {"status": "success", "deleted_book_id": book_id}
+    return {"status": "success", "deleted_book_id": isbn}
 
 # @router.post("/add_from_hand")
 # def add_from_hand(data: dict = Body(...), db: Session = Depends(get_db)):

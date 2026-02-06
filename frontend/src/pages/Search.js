@@ -22,6 +22,8 @@ function Search() {
         `http://localhost:8000/search?q=${query}&page=${p}&per_page=${perPage}`
       );
       const data = res.data;
+      // デバッグ：実際にどんなURLが届いているか確認
+      console.log("検索結果:", data.books);
       const validBooks = (data.books || []).filter((b) => b.isbn);
       setBooks(validBooks);
       setPage(p);
@@ -121,6 +123,7 @@ function Search() {
                       <img
                         src={book.cover}
                         alt={book.title}
+                        referrerPolicy="no-referrer"
                         style={{
                           width: "100px",
                           height: "150px",

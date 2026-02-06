@@ -5,9 +5,9 @@ import { Link, useLocation } from "react-router-dom";
 import axios from "axios";
 
 export default function Navbar() {
-    const { myHand, setMyHand } = useContext(MyHandContext);
+    const { myHand } = useContext(MyHandContext);
     const [isOpen, setIsOpen] = useState(false);
-    const [handBooks, setHandBooks] = useState([]);
+    const [setHandBooks] = useState([]);
 
     const location = useLocation();
     const currentPath = location.pathname;
@@ -15,7 +15,7 @@ export default function Navbar() {
     const links = [
         { path: "/", label: "本棚空間" },
         { path: "/Search", label: "本を探す" },
-        { path: "/KnowledgeGraph", label: "可視化用" },
+        // { path: "/KnowledgeGraph", label: "可視化用" },
     ];
 
     // ★ パネルが開いた瞬間に API を叩く

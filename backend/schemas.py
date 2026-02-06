@@ -20,4 +20,4 @@ class BookWithConcepts(BookBase):
 
 
 class AddFromHandRequest(BaseModel):
-    book_ids: List[str]
+    isbns: List[str]
