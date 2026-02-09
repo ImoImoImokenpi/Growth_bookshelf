@@ -1,13 +1,15 @@
 import httpx
 import xmltodict
 import traceback
+import asyncio
+import re
 from typing import Dict, Any, Optional, List
 
 # --- 定数 ---
 NDL_OPENSEARCH = "https://ndlsearch.ndl.go.jp/api/opensearch"
 GOOGLE_BOOKS_API = "https://www.googleapis.com/books/v1/volumes"
 
-# --- 内部ユーティリティ (XMLパース時のエラー防止用) ---
+# --- ユーティリティ関数 ---
 
 def safe_field(field):
     if field is None: return ""
@@ -17,24 +19,26 @@ def safe_field(field):
     if isinstance(field, dict): return field.get("#text", "")
     return str(field)
 
-def ensure_list(value):
-    if value is None: return []
-    return value if isinstance(value, list) else [value]
-
 def extract_identifier(identifiers, target_type):
     if not identifiers: return None
-    ids = ensure_list(identifiers)
+    ids = identifiers if isinstance(identifiers, list) else [identifiers]
     found_values = []
     for i in ids:
         if isinstance(i, dict):
             id_type = i.get("@xsi:type", "")
             if id_type and target_type.upper() in id_type.upper():
                 val = i.get("#text", "")
-                if val: found_values.append(val.replace("-", "").strip())
+                if val:
+                    clean_val = re.sub(r'[^0-9X]', '', val.upper())
+                    found_values.append(clean_val)
+    
     if not found_values: return None
-    if target_type.upper() == "ISBN":
-        found_values.sort(key=len, reverse=True) # 長いISBNを優先
+    found_values.sort(key=len, reverse=True)
     return found_values[0]
+
+def ensure_list(value):
+    if value is None: return []
+    return value if isinstance(value, list) else [value]
 
 def extract_ndc(subjects):
     if not subjects: return None
@@ -46,23 +50,46 @@ def extract_ndc(subjects):
                 return s.get("#text", "")
     return None
 
-# --- API連携関数 ---
+GOOGLE_BOOKS_API_KEY = "AIzaSyAw_t2zWB_U5meGL7SENj929snUMEeR0-M"
 
-async def fetch_cover_by_isbn(isbn: str, client: httpx.AsyncClient) -> Optional[str]:
-    """Google Books APIから非同期で書影を取得"""
-    params = {"q": f"isbn:{isbn}", "maxResults": 1}
+# --- API連携関数 ---
+async def fetch_single_book_cover(isbn: str, client: httpx.AsyncClient):
+    # 1. openBD を最優先（制限が緩く、日本の本に強い）
     try:
-        res = await client.get(GOOGLE_BOOKS_API, params=params, timeout=5.0)
-        if res.status_code == 200:
-            data = res.json()
+        openbd_url = f"https://api.openbd.jp/v1/get?isbn={isbn}"
+        resp = await client.get(openbd_url, timeout=3.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and data[0] and "summary" in data[0]:
+                cover = data[0]["summary"].get("cover")
+                if cover:
+                    print(f"[DEBUG] Found via openBD: {isbn}")
+                    return cover
+    except Exception: pass
+
+    # 2. Google Books API (openBDで見つからなかった場合のみ)
+    await asyncio.sleep(0.3)
+    try:
+        # APIキーなしの方が制限が緩い場合があるため、一旦 key を外した状態で試す
+        url = "https://www.googleapis.com/books/v1/volumes"
+        params = {
+            "q": f"isbn:{isbn}",
+            "key": GOOGLE_BOOKS_API_KEY
+        }
+        resp = await client.get(url, params=params, timeout=5.0)
+        
+        if resp.status_code == 200:
+            data = resp.json()
             items = data.get("items", [])
             if items:
-                img_links = items[0].get("volumeInfo", {}).get("imageLinks", {})
-                url = img_links.get("thumbnail") or img_links.get("smallThumbnail")
-                return url.replace("http://", "https://") if url else None
-    except Exception:
-        pass
-    return None
+                img = items[0].get("volumeInfo", {}).get("imageLinks", {}).get("thumbnail")
+                if img:
+                    return img.replace("http://", "https://")
+        elif resp.status_code == 403:
+            print(f"[DEBUG] Google 403 Forbidden for ISBN: {isbn} (Rate Limit)")
+    except Exception: pass
+
+    return ""
 
 async def fetch_book_metadata(
     isbn: Optional[str] = None,
@@ -99,7 +126,7 @@ async def fetch_book_metadata(
             raw_ndc = extract_ndc(item.get("dc:subject"))
 
             # 2. 書影の取得 (Google Books)
-            cover = await fetch_cover_by_isbn(isbn_value, client) if isbn_value else None
+            cover = await fetch_single_book_cover(isbn_value, client) if isbn_value else None
 
             # 3. データの整形
             return {
